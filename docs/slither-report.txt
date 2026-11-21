@@ -1,0 +1,30 @@
+
+Detector: missing-zero-check
+AgentCreditVault.setGuardian(address).newGuardian (src/AgentCreditVault.sol#140) lacks a zero-check on :
+		- guardian = newGuardian (src/AgentCreditVault.sol#141)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation
+
+Detector: timestamp
+AgentCreditVault.openLine(address,uint128,uint64,uint64,bool) (src/AgentCreditVault.sol#155-177) uses timestamp for comparisons
+	Dangerous comparisons:
+	- expiry <= block.timestamp || dueDate < expiry (src/AgentCreditVault.sol#161)
+AgentCreditVault.markDefault(address) (src/AgentCreditVault.sol#207-220) uses timestamp for comparisons
+	Dangerous comparisons:
+	- block.timestamp <= line.dueDate (src/AgentCreditVault.sol#211)
+AgentCreditVault.borrow(address,uint256,bytes32) (src/AgentCreditVault.sol#234-266) uses timestamp for comparisons
+	Dangerous comparisons:
+	- block.timestamp >= line.expiry (src/AgentCreditVault.sol#241)
+	- block.timestamp >= line.dueDate (src/AgentCreditVault.sol#242)
+AgentCreditVault.availableCredit(address) (src/AgentCreditVault.sol#317-333) uses timestamp for comparisons
+	Dangerous comparisons:
+	- ! line.active || line.defaulted || paused() || block.timestamp >= line.expiry || block.timestamp >= line.dueDate (src/AgentCreditVault.sol#320-321)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+
+Detector: cyclomatic-complexity
+AgentCreditVault.borrow(address,uint256,bytes32) (src/AgentCreditVault.sol#234-266) has a high cyclomatic complexity (12).
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#cyclomatic-complexity
+. analyzed (17 contracts with 102 detectors), 6 result(s) found
+Multiple frameworks detected: Foundry, Dapp. Using Foundry (highest priority). Use --compile-force-framework to override.
+'forge clean' running (wd: /workspace/pm-builds/agent-credit-line)
+'forge config --json' running
+'forge build --build-info --deny never --skip ./test/** ./script/** --force' running (wd: /workspace/pm-builds/agent-credit-line)
