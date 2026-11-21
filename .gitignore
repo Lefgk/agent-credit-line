@@ -25,3 +25,5 @@ sdk/dist/
 
 # Static analysis machine output
 slither.json
+
+web/tsconfig.tsbuildinfo
