@@ -2,19 +2,15 @@ import { useState } from "react";
 import {
   useAccount,
   useChainId,
-  useConnect,
-  useDisconnect,
   usePublicClient,
   useReadContract,
-  useSwitchChain,
-  useWriteContract,
 } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 import { erc20Abi, formatUnits, isAddress, parseUnits, type Address } from "viem";
 import { agentCreditVaultAbi, agentCreditVaultFactoryAbi } from "./abi";
 import { deployments } from "./config";
+import { Addr, Empty, Hint, Loading, Shell, short, useTx } from "./ui";
 
-const short = (a?: string) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "");
 const usdcFmt = (v?: bigint) => (v === undefined ? "…" : formatUnits(v, 6));
 const ts = (v?: bigint | number) => {
   const n = Number(v ?? 0);
@@ -45,62 +41,30 @@ type Record = {
 export default function App() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
-  const { connect, connectors } = useConnect();
-  const { disconnect } = useDisconnect();
-  const { switchChain, chains } = useSwitchChain();
   const dep = deployments[chainId] ?? {};
   const [vault, setVault] = useState<Address | "">("");
 
   return (
-    <div className="wrap">
-      <h1>Agent Credit Line</h1>
-      <div className="muted">
-        Owner-funded USDC credit lines for AI agents: max borrow, expiry, due date, optional allowlist,
-        borrow/repay, pause, revoke, and a public default record. Prototype — not audited. Ethereum, Base
-        and local anvil. No interest; optional flat fee.
-      </div>
-
-      <div className="card">
-        <h2>Wallet</h2>
-        {!isConnected ? (
-          <div className="row">
-            {connectors.map((c) => (
-              <button key={c.uid} onClick={() => connect({ connector: c })}>
-                Connect {c.name}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="row">
-            <span>
-              Connected <code>{address}</code>
-            </span>
-            <button className="ghost" onClick={() => disconnect()}>
-              Disconnect
-            </button>
-          </div>
-        )}
-        <div className="row">
-          {chains.map((c) => (
-            <button key={c.id} className={c.id === chainId ? "" : "ghost"} onClick={() => switchChain({ chainId: c.id })}>
-              {c.name}
-            </button>
-          ))}
-        </div>
-        {!deployments[chainId] && <div className="warn">Unsupported chain: use Ethereum, Base or local anvil.</div>}
-        {deployments[chainId] && !dep.factory && (
-          <div className="warn">
-            <strong>Not deployed yet</strong> on this chain — the factory address is empty. Core flows stay disabled until
-            you deploy (<code>make deploy-mainnet</code> or <code>make deploy-base</code>), which writes the address into{" "}
-            <code>web/src/deployments.json</code>. You can still paste an existing vault address below after connecting.
-          </div>
-        )}
-        {deployments[chainId]?.live && dep.factory && (
-          <div className="warn">
-            Live chain with real funds. This contract is NOT audited — only deposit amounts you can afford to lose.
-          </div>
-        )}
-      </div>
+    <Shell
+      title="Agent Credit Line"
+      tagline="Lend USDC to an AI agent on your terms. You fund a vault you own, open a line for the agent's key with a borrow limit, an expiry and a due date, and every borrow, repayment and default is recorded publicly on-chain. No interest; optional flat fee."
+      steps={[
+        "Create a vault and deposit the USDC you are willing to lend.",
+        "Open a line for an agent: max borrow, expiry, due date, optional destination allowlist.",
+        "The agent borrows within the line. Anyone can repay on its behalf.",
+        "Past the due date with debt left, anyone can mark a default on the public record.",
+      ]}
+      contractLabel="Vault factory"
+      contractOf={(id) => deployments[id]?.factory}
+      refs={[{ label: "USDC", address: dep.usdc }]}
+      risk={
+        <>
+          <strong>Real funds.</strong> This contract is not audited. Lending to an agent is unsecured: if it does not
+          repay, the only consequence is the public default record. Only deposit amounts you can afford to lose.
+        </>
+      }
+    >
+      {!isConnected && <Empty>Connect a wallet to create a vault, manage a line, or borrow and repay as an agent.</Empty>}
 
       {isConnected && address && (
         <>
@@ -114,28 +78,8 @@ export default function App() {
           )}
         </>
       )}
-    </div>
+    </Shell>
   );
-}
-
-function useTx() {
-  const { writeContractAsync } = useWriteContract();
-  const client = usePublicClient();
-  const [status, setStatus] = useState("");
-  const run = async (label: string, fn: () => Promise<`0x${string}`>) => {
-    try {
-      setStatus(`${label}: confirm in wallet…`);
-      const hash = await fn();
-      setStatus(`${label}: pending ${short(hash)}`);
-      await client!.waitForTransactionReceipt({ hash });
-      setStatus(`${label}: confirmed ✓`);
-      return true;
-    } catch (e) {
-      setStatus(`${label}: ${(e as Error).message.split("\n")[0]}`);
-      return false;
-    }
-  };
-  return { writeContractAsync, status, run };
 }
 
 function VaultPicker(props: {
@@ -145,27 +89,39 @@ function VaultPicker(props: {
   setVault: (v: Address | "") => void;
 }) {
   const { owner, factory, vault, setVault } = props;
-  const { data: vaults, refetch } = useReadContract({
+  const { data: vaults, refetch, isLoading } = useReadContract({
     address: factory,
     abi: agentCreditVaultFactoryAbi,
     functionName: "vaultsOf",
     args: [owner],
     query: { enabled: !!factory },
   });
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe } = useTx();
   return (
     <div className="card">
-      <h2>1. Vault</h2>
-      {!factory && (
-        <div className="warn">
-          <strong>Not deployed yet.</strong> No factory address for this chain. Deploy first (see DEPLOY.md), or set
-          VITE_FACTORY_* in web/.env.
+      <h2>1. Choose a vault</h2>
+      <p className="muted">A vault is your own lending contract. It holds the USDC you deposit and enforces each agent's line. Each wallet can own several.</p>
+      <div className="field-label">Your vaults on this network</div>
+      {!factory ? (
+        <Empty>No factory on this network, so vaults cannot be listed or created here.</Empty>
+      ) : isLoading ? (
+        <Loading>Looking up your vaults…</Loading>
+      ) : vaults && vaults.length > 0 ? (
+        <div className="row">
+          {vaults.map((v) => (
+            <button key={v} className={v === vault ? "seg seg-on" : "seg"} aria-pressed={v === vault} onClick={() => setVault(v)}>
+              <code>{short(v)}</code>
+              <span className="seg-sub">{v === vault ? "selected" : "select"}</span>
+            </button>
+          ))}
         </div>
+      ) : (
+        <Empty>This wallet has no vaults yet. Create one below, or paste the address of a vault you want to inspect.</Empty>
       )}
       <div className="row">
         <button
           disabled={!factory}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (
               await run("Create vault", () =>
                 writeContractAsync({ address: factory!, abi: agentCreditVaultFactoryAbi, functionName: "createVault" }),
@@ -175,25 +131,18 @@ function VaultPicker(props: {
               const list = r.data ?? [];
               if (list.length) setVault(list[list.length - 1]);
             }
-          }}
+          })}
         >
           Create new vault
         </button>
         <label>
-          Or use vault address
-          <input value={vault} placeholder="0x…" onChange={(e) => setVault(e.target.value as Address)} />
+          Or open a vault by address
+          <input value={vault} placeholder="0x…" spellCheck={false} onChange={(e) => setVault(e.target.value.trim() as Address)} />
         </label>
       </div>
-      {vaults && vaults.length > 0 && (
-        <div className="row">
-          {vaults.map((v) => (
-            <button key={v} className={v === vault ? "" : "ghost"} onClick={() => setVault(v)}>
-              {short(v)}
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="muted">{status}</div>
+      {vault && !isAddress(vault) && <div className="bad muted">That is not a valid address (0x followed by 40 hex characters).</div>}
+      <Hint>“Create new vault” deploys a vault contract owned by your connected wallet. One transaction, gas only — no funds move.</Hint>
+      {status}
     </div>
   );
 }
@@ -228,7 +177,7 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
     functionName: "totalFeeOwed",
   });
   const { address } = useAccount();
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe } = useTx();
   const [usdcAmt, setUsdcAmt] = useState("100");
   const [fee, setFee] = useState("0");
   const isOwner = address && owner && address.toLowerCase() === owner.toLowerCase();
@@ -241,15 +190,34 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
 
   return (
     <div className="card">
-      <h2>2. Vault overview (owner)</h2>
-      <div className="muted">
-        Owner <code>{owner ? short(owner) : "…"}</code>
-        {" · "}liquidity {usdcFmt(usdcBal)} USDC
-        {" · "}outstanding {usdcFmt(totalPrincipal)} principal + {usdcFmt(totalFeeOwed)} fees
-        {" · "}fee {feeBps !== undefined ? `${Number(feeBps) / 100}%` : "…"}
-        {" · "}
-        {paused ? <span className="bad">paused</span> : <span className="ok">active</span>}
-      </div>
+      <h2>2. Vault funding and settings (owner)</h2>
+      <dl className="dl">
+        <dt>Vault</dt>
+        <dd>
+          <Addr value={vault} full />
+        </dd>
+        <dt>Owner</dt>
+        <dd>
+          <Addr value={owner} /> {isOwner && <span className="ok">(you)</span>}
+        </dd>
+        <dt>Available to lend</dt>
+        <dd>{usdcFmt(usdcBal)} USDC</dd>
+        <dt>Outstanding</dt>
+        <dd>
+          {usdcFmt(totalPrincipal)} USDC principal + {usdcFmt(totalFeeOwed)} USDC fees
+        </dd>
+        <dt>Borrow fee</dt>
+        <dd>{feeBps !== undefined ? `${Number(feeBps) / 100}% flat` : "…"}</dd>
+        <dt>Borrowing</dt>
+        <dd>{paused === undefined ? "…" : paused ? <span className="bad">Paused</span> : <span className="ok">Active</span>}</dd>
+      </dl>
+      {owner && address && !isOwner && (
+        <div className="info">
+          You are not the owner of this vault, so the owner buttons in sections 2 and 3 are disabled. You can still
+          borrow as an agent or repay in section 4.
+        </div>
+      )}
+      <h3>Liquidity</h3>
       <div className="row">
         <label>
           Deposit USDC
@@ -257,7 +225,7 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
         </label>
         <button
           disabled={!usdc || !isOwner}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (!usdc) return;
             const amt = parseUnits(usdcAmt || "0", 6);
             if (
@@ -270,14 +238,14 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
               );
               refresh();
             }
-          }}
+          })}
         >
           Deposit
         </button>
         <button
           className="ghost"
           disabled={!usdc || !isOwner || !address}
-          onClick={async () => {
+          onClick={safe(async () => {
             const amt = parseUnits(usdcAmt || "0", 6);
             if (
               await run("Withdraw", () =>
@@ -290,11 +258,17 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
               )
             )
               refresh();
-          }}
+          })}
         >
           Withdraw unused
         </button>
       </div>
+      <Hint>
+        Deposit asks twice: approve exactly this amount of USDC, then move it from your wallet into the vault, where
+        agents with a line can borrow it. Withdraw returns USDC that is not currently lent out to your wallet, and
+        works even while paused.
+      </Hint>
+      <h3>Fee and pause</h3>
       <div className="row">
         <label>
           Flat fee (bps, 0–1000)
@@ -302,7 +276,7 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
         </label>
         <button
           disabled={!isOwner}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (
               await run("Set fee", () =>
                 writeContractAsync({
@@ -314,14 +288,14 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
               )
             )
               refresh();
-          }}
+          })}
         >
           Set fee
         </button>
         <button
           className="danger"
           disabled={!isOwner}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (await run(paused ? "Unpause" : "Pause", () =>
               writeContractAsync({
                 address: vault,
@@ -330,12 +304,17 @@ function VaultOverview({ vault, usdc }: { vault: Address; usdc?: Address }) {
               }),
             ))
               refresh();
-          }}
+          })}
         >
-          {paused ? "Unpause" : "Pause"}
+          {paused ? "Unpause borrowing" : "Pause borrowing"}
         </button>
       </div>
-      <div className="muted">{status}</div>
+      <Hint>
+        The fee is a one-off charge in basis points (100 = 1%, max 1000) added to the agent's debt on each new
+        borrow; changing it does not touch existing debt. Pause stops all new borrows on this vault; repayments and
+        your withdrawals keep working.
+      </Hint>
+      {status}
     </div>
   );
 }
@@ -351,7 +330,7 @@ function OwnerLine({ vault, usdc }: { vault: Address; usdc?: Address }) {
   const [allowlist, setAllowlist] = useState(false);
   const [recipient, setRecipient] = useState("");
   const [allowed, setAllowed] = useState(true);
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe } = useTx();
   const validAgent = isAddress(agent);
 
   const { data: line, refetch } = useReadContract({
@@ -382,10 +361,14 @@ function OwnerLine({ vault, usdc }: { vault: Address; usdc?: Address }) {
   return (
     <div className="card">
       <h2>3. Open or update a line (owner)</h2>
+      <p className="muted">
+        The agent is the key that will borrow (for example your bot's wallet). Enter its address to see its current
+        line and public record.
+      </p>
       <div className="row">
         <label>
           Agent address
-          <input value={agent} placeholder="0x…" onChange={(e) => setAgent(e.target.value)} />
+          <input value={agent} placeholder="0x…" spellCheck={false} onChange={(e) => setAgent(e.target.value.trim())} />
         </label>
         <label>
           Max borrow (USDC)
@@ -408,13 +391,13 @@ function OwnerLine({ vault, usdc }: { vault: Address; usdc?: Address }) {
             <option value="on">On — only listed addresses</option>
           </select>
         </label>
-        <button disabled={!isOwner || !validAgent} onClick={open}>
+        <button disabled={!isOwner || !validAgent} onClick={safe(open)}>
           Open / update line
         </button>
         <button
           className="danger"
           disabled={!isOwner || !validAgent}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (
               await run("Revoke", () =>
                 writeContractAsync({
@@ -426,14 +409,14 @@ function OwnerLine({ vault, usdc }: { vault: Address; usdc?: Address }) {
               )
             )
               refetch();
-          }}
+          })}
         >
           Revoke agent
         </button>
         <button
           className="ghost"
           disabled={!isOwner || !validAgent}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (
               await run("Clear default", () =>
                 writeContractAsync({
@@ -445,11 +428,19 @@ function OwnerLine({ vault, usdc }: { vault: Address; usdc?: Address }) {
               )
             )
               refetch();
-          }}
+          })}
         >
           Clear default
         </button>
       </div>
+      {agent && !validAgent && <div className="bad muted">The agent address is not a valid address.</div>}
+      <Hint>
+        “Open / update line” is one transaction and moves no funds: it lets this agent borrow up to{" "}
+        {cap || "0"} USDC in total until the expiry ({expiryDays || "0"} days), with everything due back in{" "}
+        {dueDays || "0"} days. “Revoke agent” cuts off further borrowing and wipes its allowlist; existing debt and
+        the public record stay. “Clear default” only works after the line is fully repaid and lets the agent borrow
+        again.
+      </Hint>
       {allowlist && (
         <div className="row">
           <label>
@@ -465,7 +456,7 @@ function OwnerLine({ vault, usdc }: { vault: Address; usdc?: Address }) {
           </label>
           <button
             disabled={!isOwner || !validAgent || !isAddress(recipient)}
-            onClick={async () => {
+            onClick={safe(async () => {
               if (
                 await run("Set recipient", () =>
                   writeContractAsync({
@@ -477,14 +468,20 @@ function OwnerLine({ vault, usdc }: { vault: Address; usdc?: Address }) {
                 )
               )
                 refetch();
-            }}
+            })}
           >
             Set recipient
           </button>
         </div>
       )}
+      {allowlist && (
+        <Hint>
+          With the allowlist on, the agent can only send borrowed USDC to addresses you allow here, one transaction
+          per address. Until you add one, it cannot borrow anywhere.
+        </Hint>
+      )}
       {validAgent && line && <LineSummary line={line as Line} usdc={usdc} vault={vault} agent={agent as Address} />}
-      <div className="muted">{status}</div>
+      {status}
     </div>
   );
 }
@@ -510,27 +507,39 @@ function LineSummary({ line, vault, agent, usdc }: { line: Line; vault: Address;
   });
   const record = rec as Record | undefined;
   void usdc;
+  if (!line.active && line.maxBorrow === 0n && line.principal === 0n && (!record || record.borrowCount === 0))
+    return <Empty>No line has been opened for this agent on this vault.</Empty>;
   return (
-    <div className="muted" style={{ marginTop: 8 }}>
-      {line.active ? <span className="ok">active</span> : <span className="bad">revoked / not opened</span>}
-      {line.defaulted && (
-        <>
-          {" · "}
-          <span className="bad">defaulted</span>
-        </>
-      )}
-      {" · "}cap {usdcFmt(line.maxBorrow)} USDC
-      {" · "}debt {usdcFmt(due)} (principal {usdcFmt(line.principal)} + fee {usdcFmt(line.feeOwed)})
-      {" · "}available {usdcFmt(credit)}
-      {" · "}expires {ts(line.expiry)} · due {ts(line.dueDate)}
-      {" · "}allowlist {line.allowlistEnabled ? "on" : "off"}
-      <div>
-        Public record: borrowed {usdcFmt(record?.totalBorrowed)} · repaid {usdcFmt(record?.totalRepaid)} · borrows{" "}
-        {record ? Number(record.borrowCount) : "…"} · repayments {record ? Number(record.repayCount) : "…"} · defaults{" "}
-        {record ? Number(record.defaultCount) : "…"}
+    <dl className="dl" style={{ margin: "8px 0 12px" }}>
+      <dt>Line status</dt>
+      <dd>
+        {line.active ? <span className="ok">Active</span> : <span className="bad">Revoked / not open</span>}
+        {line.defaulted && <span className="bad"> · Defaulted</span>}
+      </dd>
+      <dt>Limit</dt>
+      <dd>
+        {usdcFmt(line.maxBorrow)} USDC · {usdcFmt(credit)} USDC available now
+      </dd>
+      <dt>Debt</dt>
+      <dd>
+        {usdcFmt(due)} USDC (principal {usdcFmt(line.principal)} + fee {usdcFmt(line.feeOwed)})
+      </dd>
+      <dt>Borrow until</dt>
+      <dd>{ts(line.expiry)}</dd>
+      <dt>Repay by</dt>
+      <dd>{ts(line.dueDate)}</dd>
+      <dt>Allowlist</dt>
+      <dd>{line.allowlistEnabled ? "On — listed destinations only" : "Off — any destination"}</dd>
+      <dt>Public record</dt>
+      <dd>
+        Borrowed {usdcFmt(record?.totalBorrowed)} · repaid {usdcFmt(record?.totalRepaid)} · {record ? Number(record.borrowCount) : "…"}{" "}
+        borrows · {record ? Number(record.repayCount) : "…"} repayments ·{" "}
+        <span className={record && Number(record.defaultCount) > 0 ? "bad" : ""}>
+          {record ? Number(record.defaultCount) : "…"} defaults
+        </span>
         {record && record.lastDefaultAt > 0n ? ` (last ${ts(record.lastDefaultAt)})` : ""}
-      </div>
-    </div>
+      </dd>
+    </dl>
   );
 }
 
@@ -542,7 +551,7 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
   const [repayAmt, setRepayAmt] = useState("10");
   const [memo, setMemo] = useState("job-1");
   const valid = isAddress(agent);
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe } = useTx();
   const client = usePublicClient();
 
   const { data: line, refetch } = useReadContract({
@@ -587,13 +596,14 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
       <div className="row">
         <label>
           Agent
-          <input value={agent} placeholder="0x…" onChange={(e) => setAgent(e.target.value)} />
+          <input value={agent} placeholder="0x…" spellCheck={false} onChange={(e) => setAgent(e.target.value.trim())} />
         </label>
         <button className="ghost" disabled={!address} onClick={() => setAgent(address ?? "")}>
           Use my wallet
         </button>
       </div>
       {valid && line && <LineSummary line={line as Line} vault={vault} agent={agent as Address} usdc={usdc} />}
+      <h3>Borrow (agent key only)</h3>
       <div className="row">
         <label>
           Borrow to
@@ -609,7 +619,7 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
         </label>
         <button
           disabled={!isAddress(to) || !valid}
-          onClick={async () => {
+          onClick={safe(async () => {
             const bytes32 = memoToBytes32(memo);
             if (
               await run("Borrow", () =>
@@ -624,16 +634,18 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
               refetch();
               logs.refetch();
             }
-          }}
+          })}
         >
           Borrow
         </button>
       </div>
-      {quote && (
-        <div className="muted">
-          Quote: fee {usdcFmt(quote[0])} USDC, debt added {usdcFmt(quote[1])} USDC
-        </div>
-      )}
+      <Hint>
+        Sends {borrowAmt || "0"} USDC from the vault to the “Borrow to” address and adds{" "}
+        {quote ? usdcFmt(quote[1]) : "…"} USDC to this agent's debt (fee {quote ? usdcFmt(quote[0]) : "…"} USDC). The
+        memo is stored on-chain. It only succeeds when signed by the agent's own key, within its limit and before
+        expiry.
+      </Hint>
+      <h3>Repay or mark default</h3>
       <div className="row">
         <label>
           Repay amount (USDC)
@@ -641,7 +653,7 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
         </label>
         <button
           disabled={!usdc || !valid}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (!usdc) return;
             const amt = parseUnits(repayAmt || "0", 6);
             if (
@@ -663,7 +675,7 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
                 logs.refetch();
               }
             }
-          }}
+          })}
         >
           Repay (anyone)
         </button>
@@ -677,7 +689,7 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
         <button
           className="danger"
           disabled={!valid}
-          onClick={async () => {
+          onClick={safe(async () => {
             if (
               await run("Mark default", () =>
                 writeContractAsync({
@@ -691,14 +703,29 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
               refetch();
               logs.refetch();
             }
-          }}
+          })}
         >
           Mark default
         </button>
       </div>
-      <h2 style={{ marginTop: 16 }}>Recent activity</h2>
+      <Hint>
+        Repay asks twice: approve exactly this amount, then pay it from your wallet toward this agent's debt
+        (overpayment is capped at what is owed). Anyone can repay.
+      </Hint>
+      <Hint tone="danger">
+        “Mark default” works for anyone once the due date has passed with debt remaining. It adds a default to the
+        agent's public record, which cannot be erased, and blocks new borrows until the owner clears it.
+      </Hint>
+      <h3>Recent activity</h3>
+      {!valid && <Empty>Enter an agent address to see its activity.</Empty>}
+      {valid && logs.isLoading && <Loading>Loading recent events…</Loading>}
+      {valid && logs.isError && (
+        <div className="tx tx-error">
+          <span className="tx-body">Could not load events from the RPC. Balances above are still live; try again shortly.</span>
+        </div>
+      )}
       {logs.data && logs.data.borrowed.length + logs.data.repaid.length + logs.data.defaulted.length === 0 && (
-        <div className="muted">No borrow, repay or default events in the last ~49k blocks.</div>
+        <Empty>No borrow, repay or default events for this agent in the last ~49,000 blocks (about a day on Base).</Empty>
       )}
       {logs.data && (logs.data.borrowed.length > 0 || logs.data.repaid.length > 0 || logs.data.defaulted.length > 0) && (
         <table>
@@ -741,7 +768,9 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
               .reverse()
               .map((row) => (
                 <tr key={`${row.hash}-${row.kind}-${row.idx}`}>
-                  <td>{row.block?.toString()}</td>
+                  <td>
+                    {row.block?.toString()} {row.hash && <Addr value={row.hash} kind="tx" copy={false} />}
+                  </td>
                   <td>{row.kind}</td>
                   <td>{row.amount !== undefined ? usdcFmt(row.amount) : ""}</td>
                   <td>{row.details}</td>
@@ -750,7 +779,7 @@ function AgentView({ vault, usdc }: { vault: Address; usdc?: Address }) {
           </tbody>
         </table>
       )}
-      <div className="muted">{status}</div>
+      {status}
     </div>
   );
 }
